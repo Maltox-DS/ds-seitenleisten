@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DS – Seitenleisten & Angriffs-Alarm
 // @namespace    malte.ds
-// @version      1.1
+// @version      1.2
 // @description  Zeigt die Übersichts-Leisten (Deine Truppen, Einheiten, Produktion, Bauschleife, Account-Manager) links/rechts auf allen Seiten + wegklickbarer Balken bei eingehenden Angriffen.
 // @match        https://*.die-staemme.de/game.php*
 // @grant        none
@@ -51,25 +51,87 @@
         const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
         return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
     };
+    // Abstand Serverzeit – lokale Uhr in ms (Timing liefert je nach Version ms oder s)
     const serverOffset = () => {
-        try { return (window.Timing && Timing.getCurrentServerTime) ? Timing.getCurrentServerTime() - now() : 0; }
-        catch (e) { return 0; }
+        try {
+            if (!(window.Timing && Timing.getCurrentServerTime)) return 0;
+            let t = +Timing.getCurrentServerTime();
+            if (t && t < 1e12) t *= 1000;
+            const off = t - now();
+            return Math.abs(off) < 3600e3 ? off : 0; // Unsinn ignorieren
+        } catch (e) { return 0; }
     };
+    const TIME_RE = /^(\d+):(\d{2}):(\d{2})$/;
+    const parseDur = txt => {
+        const m = (txt || '').trim().match(TIME_RE);
+        return m ? ((+m[1]) * 3600 + (+m[2]) * 60 + (+m[3])) * 1000 : null;
+    };
+    const TIMER_SEL = '[data-endtime], .timer, .widget-command-timer, .timer_link';
 
-    // Countdown-Timer im Klon in absolute Endzeiten umwandeln
-    function markTimers(root) {
-        const off = serverOffset();
-        root.querySelectorAll('[data-endtime]').forEach(el => {
-            el.dataset.dsend = (+el.dataset.endtime) * 1000 - off;
-        });
+    // Endzeit (lokal, ms) eines Timer-Elements bestimmen
+    function endOf(el, off) {
+        if (el.dataset.endtime) return (+el.dataset.endtime) * 1000 - off;
+        const d = parseDur(el.textContent);
+        return d === null ? null : now() + d;
+    }
+
+    // "heute um 02:49:42" / "morgen um ..." in absolute Zeit umwandeln (für Datumswechsel)
+    function markArrivals(root) {
         root.querySelectorAll('*').forEach(el => {
-            if (el.dataset.dsend || el.children.length) return;
-            const m = el.textContent.trim().match(/^(\d+):(\d{2}):(\d{2})$/);
-            if (m) el.dataset.dsend = now() + ((+m[1]) * 3600 + (+m[2]) * 60 + (+m[3])) * 1000;
+            if (el.children.length && !el.querySelector('span.grey, span.small')) return;
+            const m = el.textContent.trim().match(/^(heute|morgen) um (\d{1,2}):(\d{2}):(\d{2})/);
+            if (!m || el.dataset.dsabs) return;
+            const d = new Date();
+            if (m[1] === 'morgen') d.setDate(d.getDate() + 1);
+            d.setHours(+m[2], +m[3], +m[4], 0);
+            el.dataset.dsabs = d.getTime();
+            el.dataset.dsrest = el.textContent.trim().slice(m[0].length); // z.B. Millisekunden
         });
+    }
+
+    // Countdown-Timer im Klon vorbereiten
+    function markTimers(root, name) {
+        const off = serverOffset();
+
+        if (name === 'Bauschleife') {
+            // Bauaufträge laufen NACHEINANDER: nur der erste zählt, die anderen
+            // zeigen ihre Dauer und starten, wenn der vorherige fertig ist.
+            const rows = [...root.querySelectorAll('tr, li, .queueItem')]
+                .filter(r => !r.querySelector('tr, li'));
+            let prevEnd = null;
+            rows.forEach(r => {
+                let el = r.querySelector('[data-endtime]');
+                if (!el) el = [...r.querySelectorAll('*')].find(e => !e.children.length && parseDur(e.textContent) !== null);
+                if (!el) return;
+                let end;
+                if (prevEnd === null || el.dataset.endtime) {
+                    end = endOf(el, off);
+                    if (end === null) return;
+                    if (prevEnd !== null) el.dataset.dsstart = prevEnd; // falls Spiel absolute Endzeiten liefert
+                } else {
+                    const dur = parseDur(el.textContent);
+                    if (dur === null) return;
+                    el.dataset.dsstart = prevEnd;
+                    el.dataset.dsdur = dur;
+                    end = prevEnd + dur;
+                }
+                el.dataset.dsend = end;
+                prevEnd = end;
+            });
+        } else {
+            // Nur echte Spiel-Timer verwenden – keine Uhrzeiten wie "02:49:42"
+            root.querySelectorAll(TIMER_SEL).forEach(el => {
+                if (el.querySelector(TIMER_SEL)) return;
+                const end = endOf(el, off);
+                if (end !== null) el.dataset.dsend = end;
+            });
+        }
+
+        markArrivals(root);
+
         // Spiel-eigene Timer-Klassen entfernen (sonst lädt das Spiel ggf. die Seite neu)
-        root.querySelectorAll('.timer, .widget-command-timer').forEach(el => {
-            el.classList.remove('timer', 'widget-command-timer');
+        root.querySelectorAll('.timer, .widget-command-timer, .timer_link').forEach(el => {
+            el.classList.remove('timer', 'widget-command-timer', 'timer_link');
         });
     }
 
@@ -84,7 +146,7 @@
                 const name = wanted.find(n => t.startsWith(norm(n)));
                 if (!name || out[name]) return;
                 const clone = w.cloneNode(true);
-                markTimers(clone);
+                markTimers(clone, name);
                 out[name] = clone.outerHTML;
             });
         if (Object.keys(out).length) store.set(KEY, { t: now(), w: out });
@@ -172,6 +234,7 @@
             right.style.left = (r.right + CONFIG.gap) + 'px';
         };
         position();
+        tick();
         window.addEventListener('resize', position);
         setInterval(position, 2000);
 
@@ -181,13 +244,44 @@
     }
 
     // ---------- Countdowns laufen lassen ----------
-    setInterval(() => {
+    const sameDay = (a, b) => a.toDateString() === b.toDateString();
+    function tick() {
+        const t = now();
         document.querySelectorAll('.dsSide [data-dsend]').forEach(el => {
-            const s = Math.max(0, Math.round((+el.dataset.dsend - now()) / 1000));
-            el.textContent = s ? fmt(s) : 'fertig';
-            el.classList.toggle('dsSoon', s > 0 && s < 600);
+            const end = +el.dataset.dsend;
+            const start = el.dataset.dsstart ? +el.dataset.dsstart : null;
+            const row = el.closest('tr, li, .queueItem');
+            if (start !== null && t < start) {
+                // wartet noch in der Bauschleife: feste Dauer anzeigen
+                el.textContent = fmt(Math.round((end - start) / 1000));
+                el.classList.add('dsWaiting');
+                el.classList.remove('dsSoon');
+                return;
+            }
+            el.classList.remove('dsWaiting');
+            const s = Math.max(0, Math.round((end - t) / 1000));
+            if (s === 0) {
+                // fertig / angekommen: Zeile ausblenden
+                if (row) row.classList.add('dsDone');
+                el.textContent = 'fertig';
+                return;
+            }
+            el.textContent = fmt(s);
+            el.classList.toggle('dsSoon', s < 600);
         });
-    }, 1000);
+        // "heute / morgen um" nach Mitternacht korrekt halten
+        const today = new Date(t), tomorrow = new Date(t + 864e5);
+        document.querySelectorAll('.dsSide [data-dsabs]').forEach(el => {
+            const d = new Date(+el.dataset.dsabs);
+            const hms = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const day = sameDay(d, today) ? 'heute'
+                : sameDay(d, tomorrow) ? 'morgen'
+                : 'am ' + d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) + '.';
+            const txt = `${day} um ${hms}${el.dataset.dsrest || ''}`;
+            if (el.textContent !== txt) el.textContent = txt;
+        });
+    }
+    setInterval(tick, 1000);
 
     // ---------- Angriffs-Alarm ----------
     function incomingCount() {
@@ -306,6 +400,8 @@
         .dsCardBody img { vertical-align: middle; }
         .dsCardBody [data-dsend] { font-variant-numeric: tabular-nums; font-weight: bold; color: #2f5d0f; }
         .dsCardBody [data-dsend].dsSoon { color: #b31b00; }
+        .dsCardBody [data-dsend].dsWaiting { color: #7a6a50; font-weight: normal; }
+        .dsCardBody .dsDone { display: none !important; }
 
         .dsSideFoot {
             display: flex; justify-content: space-between; align-items: center; gap: 8px;
