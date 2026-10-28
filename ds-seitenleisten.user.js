@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DS – Seitenleisten & Angriffs-Alarm
 // @namespace    malte.ds
-// @version      1.2
+// @version      1.3
 // @description  Zeigt die Übersichts-Leisten (Deine Truppen, Einheiten, Produktion, Bauschleife, Account-Manager) links/rechts auf allen Seiten + wegklickbarer Balken bei eingehenden Angriffen.
 // @match        https://*.die-staemme.de/game.php*
 // @grant        none
@@ -70,7 +70,11 @@
 
     // Endzeit (lokal, ms) eines Timer-Elements bestimmen
     function endOf(el, off) {
-        if (el.dataset.endtime) return (+el.dataset.endtime) * 1000 - off;
+        if (el.dataset.endtime) {
+            let e = +el.dataset.endtime;
+            if (e < 1e12) e *= 1000; // Sekunden -> ms
+            return e - off;
+        }
         const d = parseDur(el.textContent);
         return d === null ? null : now() + d;
     }
@@ -129,9 +133,17 @@
 
         markArrivals(root);
 
-        // Spiel-eigene Timer-Klassen entfernen (sonst lädt das Spiel ggf. die Seite neu)
-        root.querySelectorAll('.timer, .widget-command-timer, .timer_link').forEach(el => {
+        neutralize(root);
+    }
+
+    // Spiel-Timer-Merkmale entfernen: Sonst findet das Spiel (oder ein anderes Skript)
+    // unsere Kopien und überschreibt die Restzeit mit falschen Werten.
+    function neutralize(root) {
+        root.querySelectorAll('[data-endtime], .timer, .widget-command-timer, .timer_link').forEach(el => {
             el.classList.remove('timer', 'widget-command-timer', 'timer_link');
+            [...el.attributes].forEach(a => {
+                if (a.name.startsWith('data-') && !a.name.startsWith('data-ds')) el.removeAttribute(a.name);
+            });
         });
     }
 
@@ -196,6 +208,7 @@
             const body = document.createElement('div');
             body.className = 'dsCardBody';
             body.innerHTML = data.w[name];
+            neutralize(body);
 
             card.append(head, body);
             return card;
@@ -266,6 +279,7 @@
                 el.textContent = 'fertig';
                 return;
             }
+            if (s > 30 * 86400) { el.textContent = '–'; return; } // unplausibel
             el.textContent = fmt(s);
             el.classList.toggle('dsSoon', s < 600);
         });
