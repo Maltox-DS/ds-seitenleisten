@@ -2,7 +2,7 @@
  * DS – Seitenleisten & Angriffs-Alarm (by Maltox)
  * Eigentlicher Code. Wird vom Loader ds-seitenleisten.user.js immer in der
  * neuesten Version von GitHub geladen – nicht direkt in Tampermonkey installieren.
- * Stand: 1.6
+ * Stand: 1.6.1
  */
 
 (function () {
@@ -246,8 +246,10 @@
                 if (el.closest('.dsSide')) return;
                 const b = el.getBoundingClientRect();
                 if (!b.width || !b.height) return;              // unsichtbar
-                if (b.right <= r.left + 2) lEdge = Math.min(lEdge, b.left);   // links neben dem Inhalt
-                if (b.left >= r.right - 2) rEdge = Math.max(rEdge, b.right);  // rechts neben dem Inhalt
+                if (b.width > 250 || b.height > 2000) return;   // Container/Hintergründe, keine Boxen
+                // nur Boxen, die direkt am Spielbereich kleben (max. 150 px Abstand)
+                if (b.right <= r.left + 2 && r.left - b.right <= 150) lEdge = Math.min(lEdge, b.left);
+                if (b.left >= r.right - 2 && b.left - r.right <= 150) rEdge = Math.max(rEdge, b.right);
             });
             return [lEdge, rEdge];
         };
