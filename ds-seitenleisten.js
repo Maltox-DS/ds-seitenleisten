@@ -2,7 +2,7 @@
  * DS – Seitenleisten & Angriffs-Alarm (by Maltox)
  * Eigentlicher Code. Wird vom Loader ds-seitenleisten.user.js immer in der
  * neuesten Version von GitHub geladen – nicht direkt in Tampermonkey installieren.
- * Stand: 1.4
+ * Stand: 1.6
  */
 
 (function () {
@@ -18,7 +18,10 @@
         gap: 24,           // Abstand zum Spielbereich
         top: 70,           // Abstand von oben in px
         alarm: true,       // Angriffs-Balken an/aus
-        alarmBlinkTitle: true // Tab-Titel blinkt bei Angriffen (solange nicht weggeklickt)
+        alarmBlinkTitle: true, // Tab-Titel blinkt bei Angriffen (solange nicht weggeklickt)
+        // Feste Mindestbreite des Spielbereichs in px, damit Dorfwechsel-Pfeile & Co.
+        // nicht mehr hin- und herspringen. 0 = aus. Breitere Seiten (z. B. Karte) bleiben breiter.
+        fixedWidth: 0
     };
     // =========================================================
 
@@ -234,16 +237,32 @@
         const left = makePanel('left', CONFIG.left);
         const right = makePanel('right', CONFIG.right);
 
+        // Spiel-Elemente links/rechts neben dem Spielbereich (Quests, Belohnungen …),
+        // die von den Leisten nicht verdeckt werden dürfen
+        const OBSTACLES = '[id*="quest" i], [class*="quest" i], [id*="reward" i], [class*="reward" i]';
+        const edges = r => {
+            let lEdge = r.left, rEdge = r.right;
+            document.querySelectorAll(OBSTACLES).forEach(el => {
+                if (el.closest('.dsSide')) return;
+                const b = el.getBoundingClientRect();
+                if (!b.width || !b.height) return;              // unsichtbar
+                if (b.right <= r.left + 2) lEdge = Math.min(lEdge, b.left);   // links neben dem Inhalt
+                if (b.left >= r.right - 2) rEdge = Math.max(rEdge, b.right);  // rechts neben dem Inhalt
+            });
+            return [lEdge, rEdge];
+        };
+
         const position = () => {
             const r = content.getBoundingClientRect();
-            const lw = Math.min(CONFIG.panelWidth, r.left - CONFIG.gap * 2);
-            const rw = Math.min(CONFIG.panelWidth, window.innerWidth - r.right - CONFIG.gap * 2);
+            const [lEdge, rEdge] = edges(r);
+            const lw = Math.min(CONFIG.panelWidth, lEdge - CONFIG.gap * 2);
+            const rw = Math.min(CONFIG.panelWidth, window.innerWidth - rEdge - CONFIG.gap * 2);
             left.style.display = lw >= CONFIG.minWidth ? '' : 'none';
             right.style.display = rw >= CONFIG.minWidth ? '' : 'none';
             left.style.width = lw + 'px';
-            left.style.left = (r.left - CONFIG.gap - lw) + 'px';
+            left.style.left = (lEdge - CONFIG.gap - lw) + 'px';
             right.style.width = rw + 'px';
-            right.style.left = (r.right + CONFIG.gap) + 'px';
+            right.style.left = (rEdge + CONFIG.gap) + 'px';
         };
         position();
         tick();
@@ -369,7 +388,12 @@
 
     // ---------- Styles ----------
     const css = document.createElement('style');
-    css.textContent = `
+    const fixedCss = CONFIG.fixedWidth ? `
+        #contentContainer, #header_info {
+            min-width: min(${CONFIG.fixedWidth}px, calc(100vw - 40px)) !important;
+            box-sizing: border-box;
+        }` : '';
+    css.textContent = fixedCss + `
         .dsSide {
             position: fixed; top: ${CONFIG.top}px; z-index: 50;
             max-height: calc(100vh - ${CONFIG.top + 80}px); overflow-y: auto;
